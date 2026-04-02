@@ -37,9 +37,11 @@ def parse_entry(natural_text: str) -> dict[str, Any]:
             "You are PeakFuel parser. Split the input into one or more log entries when needed. "
             "Return JSON with key 'entries' where each entry has: type, confidence, and data. "
             "Allowed types: workout, hike, food, note. "
-            "For workout use keys: date, workout_name, muscle_group, duration_minutes, cardio_minutes, notes, original_text, exercises[]. "
-            "For hike use keys: date, trail_name, distance_miles, duration_minutes, elevation_gain_ft, difficulty, notes, original_text. "
+            "For workout use keys: date, workout_name, muscle_group, duration_minutes, cardio_minutes, estimated_calories_burned, notes, original_text, exercises[]. "
+            "For hike use keys: date, trail_name, distance_miles, duration_minutes, elevation_gain_ft, estimated_calories_burned, difficulty, notes, original_text. "
             "For food use keys: date, meal_type, foods[], total_calories, total_protein, total_carbs, total_fat, notes, original_text. "
+            "Each foods[] item must be an object with keys: item_name, estimated_calories, protein_g, carbs_g, fat_g. "
+            "Provide calorie estimates whenever possible. For food, assume one serving per item unless quantity is explicitly stated; if quantity is stated, scale estimates accordingly. "
             "Include missing fields as null. Keep date as YYYY-MM-DD; default today if ambiguous."
         )
         try:
@@ -64,6 +66,26 @@ def parse_entry(natural_text: str) -> dict[str, Any]:
                 data = entry.get("data") or {}
                 if not isinstance(data, dict):
                     data = {}
+                if entry.get("type") == "food":
+                    foods = data.get("foods")
+                    if isinstance(foods, list):
+                        normalized_foods = []
+                        for food in foods:
+                            if isinstance(food, str):
+                                normalized_foods.append(
+                                    {"item_name": food, "estimated_calories": None, "protein_g": None, "carbs_g": None, "fat_g": None}
+                                )
+                            elif isinstance(food, dict):
+                                normalized_foods.append(
+                                    {
+                                        "item_name": food.get("item_name"),
+                                        "estimated_calories": food.get("estimated_calories"),
+                                        "protein_g": food.get("protein_g"),
+                                        "carbs_g": food.get("carbs_g"),
+                                        "fat_g": food.get("fat_g"),
+                                    }
+                                )
+                        data["foods"] = normalized_foods
                 data.setdefault("original_text", natural_text)
                 normalized.append(
                     {

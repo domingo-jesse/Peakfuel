@@ -187,6 +187,8 @@ def insert_workout(payload: dict[str, Any]) -> int:
         )
         workout_id = cur.lastrowid
         for ex in payload.get("exercises", []):
+            if not isinstance(ex, dict):
+                continue
             conn.execute(
                 """
                 INSERT INTO workout_exercises(workout_id, exercise_name, sets, reps, weight)
@@ -243,6 +245,10 @@ def insert_food(payload: dict[str, Any]) -> int:
         )
         food_id = cur.lastrowid
         for item in payload.get("foods", []):
+            if isinstance(item, str):
+                item = {"item_name": item}
+            if not isinstance(item, dict):
+                continue
             conn.execute(
                 """
                 INSERT INTO food_items(food_id, item_name, estimated_calories, protein_g, carbs_g, fat_g)
