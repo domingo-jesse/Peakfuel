@@ -43,8 +43,7 @@ nav = st.sidebar.radio(
     "Navigate",
     [
         "Dashboard",
-        "Voice Log",
-        "Manual Log",
+        "Log Entry",
         "Workout History",
         "Hike History",
         "Food History",
@@ -54,7 +53,7 @@ nav = st.sidebar.radio(
 )
 
 
-if nav in {"Voice Log", "Manual Log"}:
+if nav == "Log Entry":
     st.sidebar.markdown("---")
     st.sidebar.subheader("Current Parse")
     p = st.session_state.get("parsed_entry")
@@ -172,42 +171,41 @@ if nav == "Dashboard":
             prev = d
         st.line_chart(pd.DataFrame(rows).set_index("date"))
 
-elif nav == "Voice Log":
-    st.subheader("🎤 Voice Log")
-    st.caption("Upload audio, transcribe, edit transcript, parse with AI, then save.")
-    audio = st.file_uploader("Upload audio (mp3/wav/m4a)", type=["mp3", "wav", "m4a"])
+elif nav == "Log Entry":
+    st.subheader("📝 Log Entry")
+    st.caption("Type your entry and/or transcribe audio in one place, then parse and save.")
 
-    transcript = st.text_area("Transcript", value=st.session_state.get("voice_text", ""), height=180)
-    if st.button("Transcribe Audio", use_container_width=True):
+    audio = st.file_uploader("Optional audio upload (mp3/wav/m4a)", type=["mp3", "wav", "m4a"])
+    text = st.text_area(
+        "Entry Text",
+        value=st.session_state.get("log_text", ""),
+        height=220,
+        placeholder="Leg day, squats 4x8 at 185... (or upload audio and click Transcribe)",
+    )
+
+    c1, c2 = st.columns(2)
+    if c1.button("Transcribe Audio", use_container_width=True):
         if audio:
-            text = transcribe_audio(audio)
-            if text:
-                st.session_state.voice_text = text
-                st.success("Transcribed. You can edit below.")
+            transcribed = transcribe_audio(audio)
+            if transcribed:
+                combined_text = f"{text.strip()}\n{transcribed}".strip() if text.strip() else transcribed
+                st.session_state.log_text = combined_text
+                st.success("Audio transcribed and merged into entry text.")
                 st.rerun()
             else:
-                st.warning("Transcription unavailable. Add OPENAI_API_KEY or enter transcript manually.")
+                st.warning("Transcription unavailable. Add OPENAI_API_KEY or enter text manually.")
         else:
             st.warning("Upload an audio file first.")
 
-    transcript = st.text_area("Editable Transcript", value=st.session_state.get("voice_text", transcript), height=180, key="editable_transcript")
-    if st.button("Parse Transcript", use_container_width=True):
-        if transcript.strip():
-            st.session_state.parsed_entry = parse_entry(transcript)
+    if c2.button("Parse Entry", type="primary", use_container_width=True):
+        if text.strip():
+            st.session_state.log_text = text
+            st.session_state.parsed_entry = parse_entry(text)
             st.success("Parsed. Review and save below.")
         else:
-            st.warning("Please enter or transcribe text first.")
+            st.warning("Please type or transcribe an entry first.")
 
-elif nav == "Manual Log":
-    st.subheader("✍️ Manual Log")
-    text = st.text_area("Describe your workout, hike, or meal", height=220, placeholder="Leg day, squats 4x8 at 185...")
-    if st.button("Parse Entry", type="primary", use_container_width=True):
-        if text.strip():
-            st.session_state.parsed_entry = parse_entry(text)
-        else:
-            st.warning("Please type an entry first.")
-
-if nav in {"Voice Log", "Manual Log"}:
+if nav == "Log Entry":
     parsed = st.session_state.get("parsed_entry")
     if parsed:
         etype = parsed.get("type", "note")
@@ -334,8 +332,8 @@ elif nav == "Progress & Stats":
             total_sets += int(ex["sets"].fillna(0).sum())
             est_weight += float((ex["sets"].fillna(0) * ex["reps"].fillna(0) * ex["weight"].fillna(0)).sum())
 
-    weekly_workouts = workouts[workouts["date"].dt.date >= (date.today() - pd.Timedelta(days=7)).date()].shape[0] if not workouts.empty else 0
-    monthly_workouts = workouts[workouts["date"].dt.date >= (date.today() - pd.Timedelta(days=30)).date()].shape[0] if not workouts.empty else 0
+    weekly_workouts = workouts[workouts["date"].dt.date >= (date.today() - pd.Timedelta(days=7))].shape[0] if not workouts.empty else 0
+    monthly_workouts = workouts[workouts["date"].dt.date >= (date.today() - pd.Timedelta(days=30))].shape[0] if not workouts.empty else 0
     most_group = workouts["muscle_group"].mode().iloc[0] if not workouts.empty and workouts["muscle_group"].notna().any() else "N/A"
 
     c1, c2, c3, c4 = st.columns(4)
