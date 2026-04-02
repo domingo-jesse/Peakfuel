@@ -1,10 +1,10 @@
 from dotenv import load_dotenv
-from datetime import date, datetime
+from datetime import date
 
 import pandas as pd
 import streamlit as st
 
-from ai_parser import parse_entry, transcribe_audio
+from ai_parser import parse_entry
 from db import (
     compute_streaks,
     delete_entry,
@@ -55,8 +55,8 @@ nav = st.sidebar.radio(
 
 if nav == "Log Entry":
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Current Parse")
-    p = st.session_state.get("parsed_entry")
+    st.sidebar.subheader("Last Submit")
+    p = st.session_state.get("last_submit")
     if p:
         st.sidebar.write(f"Type: **{p.get('type', 'unknown')}**")
         st.sidebar.write(f"Confidence: **{round(float(p.get('confidence', 0))*100)}%**")
@@ -73,7 +73,31 @@ def save_payload(entry_type: str, payload: dict):
         st.warning("Only workout/hike/food save is enabled in v1.")
         return
     st.success("Saved successfully!")
-    st.session_state.parsed_entry = None
+
+
+def render_daily_log_timeline(day: date):
+    workouts = safe_dt(fetch_workouts(), "date")
+    hikes = safe_dt(fetch_hikes(), "date")
+    foods = safe_dt(fetch_foods(), "date")
+
+    events = []
+    if not workouts.empty:
+        for _, row in workouts[workouts["date"].dt.date == day].iterrows():
+            events.append((row["date"], f"🏋️ Workout · {row.get('workout_name') or 'Workout'}"))
+    if not hikes.empty:
+        for _, row in hikes[hikes["date"].dt.date == day].iterrows():
+            events.append((row["date"], f"🥾 Hike · {row.get('trail_name') or 'Hike'}"))
+    if not foods.empty:
+        for _, row in foods[foods["date"].dt.date == day].iterrows():
+            events.append((row["date"], f"🍱 Food · {row.get('meal_type') or 'Meal'}"))
+
+    events.sort(key=lambda x: x[0])
+    if not events:
+        st.info(f"No log entries for {day.isoformat()}.")
+        return
+
+    for _, label in events:
+        st.markdown(f"- {label}")
 
 
 if nav == "Dashboard":
@@ -173,105 +197,53 @@ if nav == "Dashboard":
 
 elif nav == "Log Entry":
     st.subheader("📝 Log Entry")
-    st.caption("Type your entry and/or transcribe audio in one place, then parse and save.")
+    st.caption("Write one log entry, then submit to auto-parse and save to workout, hike, or food history.")
 
-    audio = st.file_uploader("Optional audio upload (mp3/wav/m4a)", type=["mp3", "wav", "m4a"])
     text = st.text_area(
         "Entry Text",
         value=st.session_state.get("log_text", ""),
         height=220,
-        placeholder="Leg day, squats 4x8 at 185... (or upload audio and click Transcribe)",
+        placeholder="Example: Hiked 4 miles at Mission Peak, then ate a turkey sandwich and did 30 min leg workout.",
     )
 
-    c1, c2 = st.columns(2)
-    if c1.button("Transcribe Audio", use_container_width=True):
-        if audio:
-            transcribed = transcribe_audio(audio)
-            if transcribed:
-                combined_text = f"{text.strip()}\n{transcribed}".strip() if text.strip() else transcribed
-                st.session_state.log_text = combined_text
-                st.success("Audio transcribed and merged into entry text.")
-                st.rerun()
-            else:
-                st.warning("Transcription unavailable. Add OPENAI_API_KEY or enter text manually.")
-        else:
-            st.warning("Upload an audio file first.")
-
-    if c2.button("Parse Entry", type="primary", use_container_width=True):
+    if st.button("Submit", type="primary", use_container_width=True):
         if text.strip():
             st.session_state.log_text = text
-            st.session_state.parsed_entry = parse_entry(text)
-            st.success("Parsed. Review and save below.")
+            parsed = parse_entry(text)
+            st.session_state.last_submit = parsed
+            etype = parsed.get("type", "note")
+            data = parsed.get("data", {})
+            if etype in {"workout", "hike", "food"}:
+                save_payload(etype, data)
+                st.session_state.log_text = ""
+                st.success(f"Submitted and saved as {etype}.")
+                st.rerun()
+            else:
+                st.warning("Entry was parsed as a note. Add clearer workout/hike/food details and submit again.")
         else:
-            st.warning("Please type or transcribe an entry first.")
+            st.warning("Please type an entry first.")
 
-if nav == "Log Entry":
-    parsed = st.session_state.get("parsed_entry")
-    if parsed:
-        etype = parsed.get("type", "note")
-        data = parsed.get("data", {})
-        st.markdown("---")
-        st.subheader("Review & Save")
-        st.caption(f"Detected type: **{etype}** · Confidence: **{round(float(parsed.get('confidence',0))*100)}%**")
-
-        if etype == "workout":
-            c1, c2, c3 = st.columns(3)
-            data["date"] = str(c1.date_input("Date", value=datetime.fromisoformat(data.get("date", str(date.today()))).date()))
-            data["workout_name"] = c2.text_input("Workout Name", value=data.get("workout_name") or "")
-            data["muscle_group"] = c3.text_input("Muscle Group", value=data.get("muscle_group") or "")
-            c4, c5 = st.columns(2)
-            data["duration_minutes"] = c4.number_input("Duration (min)", value=int(data.get("duration_minutes") or 0), step=5)
-            data["cardio_minutes"] = c5.number_input("Cardio (min)", value=int(data.get("cardio_minutes") or 0), step=5)
-            data["notes"] = st.text_area("Notes", value=data.get("notes") or "")
-
-            st.write("Exercises")
-            ex_df = pd.DataFrame(data.get("exercises") or [{"exercise_name": "", "sets": 0, "reps": 0, "weight": 0}])
-            ex_edit = st.data_editor(ex_df, num_rows="dynamic", use_container_width=True)
-            data["exercises"] = ex_edit.to_dict("records")
-            if st.button("Save Workout", use_container_width=True):
-                save_payload("workout", data)
-
-        elif etype == "hike":
-            c1, c2 = st.columns(2)
-            data["date"] = str(c1.date_input("Date", value=datetime.fromisoformat(data.get("date", str(date.today()))).date(), key="h_date"))
-            data["trail_name"] = c2.text_input("Trail Name", value=data.get("trail_name") or "")
-            c3, c4, c5 = st.columns(3)
-            data["distance_miles"] = c3.number_input("Distance (miles)", value=float(data.get("distance_miles") or 0.0), step=0.1)
-            data["duration_minutes"] = c4.number_input("Duration (min)", value=int(data.get("duration_minutes") or 0), step=5)
-            data["elevation_gain_ft"] = c5.number_input("Elevation Gain (ft)", value=int(data.get("elevation_gain_ft") or 0), step=50)
-            data["difficulty"] = st.selectbox("Difficulty", ["Easy", "Moderate", "Hard"], index=["Easy", "Moderate", "Hard"].index(data.get("difficulty")) if data.get("difficulty") in ["Easy", "Moderate", "Hard"] else 1)
-            data["notes"] = st.text_area("Notes", value=data.get("notes") or "", key="h_notes")
-            if st.button("Save Hike", use_container_width=True):
-                save_payload("hike", data)
-
-        elif etype == "food":
-            c1, c2 = st.columns(2)
-            data["date"] = str(c1.date_input("Date", value=datetime.fromisoformat(data.get("date", str(date.today()))).date(), key="f_date"))
-            data["meal_type"] = c2.selectbox("Meal Type", ["breakfast", "lunch", "dinner", "snack"], index=["breakfast", "lunch", "dinner", "snack"].index(data.get("meal_type")) if data.get("meal_type") in ["breakfast", "lunch", "dinner", "snack"] else 1)
-            items_df = pd.DataFrame(data.get("foods") or [{"item_name": "", "estimated_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0}])
-            items_edit = st.data_editor(items_df, num_rows="dynamic", use_container_width=True)
-            data["foods"] = items_edit.to_dict("records")
-
-            c3, c4, c5, c6 = st.columns(4)
-            data["total_calories"] = c3.number_input("Total Calories", value=float(data.get("total_calories") or 0), step=10.0)
-            data["total_protein"] = c4.number_input("Total Protein", value=float(data.get("total_protein") or 0), step=1.0)
-            data["total_carbs"] = c5.number_input("Total Carbs", value=float(data.get("total_carbs") or 0), step=1.0)
-            data["total_fat"] = c6.number_input("Total Fat", value=float(data.get("total_fat") or 0), step=1.0)
-            data["notes"] = st.text_area("Notes", value=data.get("notes") or "", key="f_notes")
-            if st.button("Save Meal", use_container_width=True):
-                save_payload("food", data)
-        else:
-            st.warning("Unsupported type. Edit text and re-parse.")
+    st.markdown("---")
+    st.subheader("📅 Daily Calendar + Log History")
+    selected_day = st.date_input("Select a date to view what happened", value=date.today(), key="log_calendar")
+    render_daily_log_timeline(selected_day)
 
 elif nav == "Workout History":
     st.subheader("🏋️ Workout History")
     df = safe_dt(fetch_workouts(), "date")
     c1, c2 = st.columns(2)
     q = c1.text_input("Search workout name/notes")
-    d_from = c2.date_input("From Date", value=date.today().replace(day=1))
+    selected_day = c2.date_input("Calendar Date", value=date.today(), key="workout_calendar")
     if q:
         df = df[df["workout_name"].fillna("").str.contains(q, case=False) | df["notes"].fillna("").str.contains(q, case=False)]
-    df = df[df["date"].dt.date >= d_from]
+    st.markdown("#### Selected Day")
+    day_df = df[df["date"].dt.date == selected_day]
+    if day_df.empty:
+        st.info("No workouts for the selected day.")
+    else:
+        for _, row in day_df.iterrows():
+            st.markdown(f"- {row['date'].date()} · **{row['workout_name']}** ({row['muscle_group']})")
+    st.markdown("#### Log History")
     st.write(f"Total sessions: **{len(df)}**")
     for _, row in df.iterrows():
         with st.expander(f"{row['date'].date()} · {row['workout_name']} ({row['muscle_group']})"):
@@ -287,10 +259,17 @@ elif nav == "Hike History":
     df = safe_dt(fetch_hikes(), "date")
     c1, c2 = st.columns(2)
     q = c1.text_input("Search trail/notes")
-    d_from = c2.date_input("From Date", value=date.today().replace(day=1), key="hfrom")
+    selected_day = c2.date_input("Calendar Date", value=date.today(), key="hike_calendar")
     if q:
         df = df[df["trail_name"].fillna("").str.contains(q, case=False) | df["notes"].fillna("").str.contains(q, case=False)]
-    df = df[df["date"].dt.date >= d_from]
+    st.markdown("#### Selected Day")
+    day_df = df[df["date"].dt.date == selected_day]
+    if day_df.empty:
+        st.info("No hikes for the selected day.")
+    else:
+        for _, row in day_df.iterrows():
+            st.markdown(f"- {row['date'].date()} · **{row['trail_name']}** ({row['distance_miles']} mi)")
+    st.markdown("#### Log History")
     st.write(f"Total hikes: **{len(df)}** · Total miles: **{round(df['distance_miles'].fillna(0).sum(),1) if not df.empty else 0}**")
     for _, row in df.iterrows():
         with st.expander(f"{row['date'].date()} · {row['trail_name']} ({row['distance_miles']} mi)"):
@@ -304,10 +283,17 @@ elif nav == "Food History":
     df = safe_dt(fetch_foods(), "date")
     c1, c2 = st.columns(2)
     q = c1.text_input("Search meal/notes")
-    d_from = c2.date_input("From Date", value=date.today().replace(day=1), key="ffrom")
+    selected_day = c2.date_input("Calendar Date", value=date.today(), key="food_calendar")
     if q:
         df = df[df["meal_type"].fillna("").str.contains(q, case=False) | df["notes"].fillna("").str.contains(q, case=False)]
-    df = df[df["date"].dt.date >= d_from]
+    st.markdown("#### Selected Day")
+    day_df = df[df["date"].dt.date == selected_day]
+    if day_df.empty:
+        st.info("No food logs for the selected day.")
+    else:
+        for _, row in day_df.iterrows():
+            st.markdown(f"- {row['date'].date()} · **{row['meal_type']}** ({row.get('total_calories') or 0} kcal)")
+    st.markdown("#### Log History")
     st.write(f"Meals: **{len(df)}** · Avg protein: **{round(df['total_protein'].fillna(0).mean(),1) if not df.empty else 0} g**")
     for _, row in df.iterrows():
         with st.expander(f"{row['date'].date()} · {row['meal_type']} ({row.get('total_calories') or 0} kcal)"):
