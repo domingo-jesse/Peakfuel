@@ -2,6 +2,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import json
 import random
 from typing import Any
 
@@ -104,6 +105,18 @@ CREATE TABLE IF NOT EXISTS profile (
     protein_goal REAL DEFAULT 160,
     weekly_workout_goal INTEGER DEFAULT 4,
     weekly_hike_goal INTEGER DEFAULT 2
+);
+
+CREATE TABLE IF NOT EXISTS entry_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    raw_text TEXT NOT NULL,
+    parsed_type TEXT,
+    confidence REAL DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    payload_json TEXT,
+    target_table TEXT,
+    target_id INTEGER
 );
 """
 
@@ -287,6 +300,78 @@ def update_profile(payload: dict[str, Any]) -> None:
             ),
         )
         conn.commit()
+
+
+def insert_history_entry(raw_text: str, parsed_type: str, confidence: float, payload_json: str) -> int:
+    with closing(get_conn()) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO entry_history(raw_text, parsed_type, confidence, status, payload_json)
+            VALUES (?, ?, ?, 'pending', ?)
+            """,
+            (raw_text, parsed_type, confidence, payload_json),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def fetch_history_entries(status: str | None = None) -> pd.DataFrame:
+    if status:
+        return read_df("SELECT * FROM entry_history WHERE status = ? ORDER BY id DESC", (status,))
+    return read_df("SELECT * FROM entry_history ORDER BY id DESC")
+
+
+def update_history_entry(entry_id: int, parsed_type: str, payload_json: str) -> None:
+    with closing(get_conn()) as conn:
+        conn.execute(
+            """
+            UPDATE entry_history
+            SET parsed_type = ?, payload_json = ?
+            WHERE id = ?
+            """,
+            (parsed_type, payload_json, entry_id),
+        )
+        conn.commit()
+
+
+def set_history_status(entry_id: int, status: str) -> None:
+    with closing(get_conn()) as conn:
+        conn.execute("UPDATE entry_history SET status = ? WHERE id = ?", (status, entry_id))
+        conn.commit()
+
+
+def delete_history_entry(entry_id: int) -> None:
+    with closing(get_conn()) as conn:
+        conn.execute("DELETE FROM entry_history WHERE id = ?", (entry_id,))
+        conn.commit()
+
+
+def approve_history_entry(entry_id: int, parsed_type: str, payload: dict[str, Any]) -> bool:
+    table = None
+    target_id = None
+    if parsed_type == "workout":
+        target_id = insert_workout(payload)
+        table = "workouts"
+    elif parsed_type == "hike":
+        target_id = insert_hike(payload)
+        table = "hikes"
+    elif parsed_type == "food":
+        target_id = insert_food(payload)
+        table = "foods"
+    else:
+        return False
+
+    with closing(get_conn()) as conn:
+        conn.execute(
+            """
+            UPDATE entry_history
+            SET status = 'approved', target_table = ?, target_id = ?, parsed_type = ?, payload_json = ?
+            WHERE id = ?
+            """,
+            (table, target_id, parsed_type, json.dumps(payload), entry_id),
+        )
+        conn.commit()
+    return True
 
 
 def fetch_trophies() -> pd.DataFrame:
