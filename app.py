@@ -77,7 +77,11 @@ def _estimate_food_calories(payload: dict) -> float:
         return total
     foods = payload.get("foods", [])
     if isinstance(foods, list):
-        return sum(_to_float(item.get("estimated_calories")) for item in foods if isinstance(item, dict))
+        total_foods = 0.0
+        for item in foods:
+            if isinstance(item, dict):
+                total_foods += _to_float(item.get("estimated_calories"))
+        return total_foods
     return 0.0
 
 
