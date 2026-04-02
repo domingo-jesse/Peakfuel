@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 from datetime import date, datetime
 import json
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -57,6 +58,10 @@ def _to_float(value, default=0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _pacific_now() -> datetime:
+    return datetime.now(ZoneInfo("America/Los_Angeles"))
 
 
 def _estimate_workout_calories(payload: dict) -> float:
@@ -301,13 +306,13 @@ elif nav == "Log Entry":
         height=220,
         placeholder="Example: Hiked 4 miles at Mission Peak, then ate a turkey sandwich and did 30 min leg workout.",
     )
-    submit_now = datetime.now()
+    submit_now = _pacific_now()
     dcol, tcol = st.columns(2)
     with dcol:
         submit_date = st.date_input("Log date", value=submit_now.date(), key="submit_log_date")
     with tcol:
         submit_time = st.time_input("Log time", value=submit_now.time().replace(microsecond=0), key="submit_log_time")
-    submitted_at = datetime.combine(submit_date, submit_time).isoformat(timespec="seconds")
+    submitted_at = datetime.combine(submit_date, submit_time, tzinfo=ZoneInfo("America/Los_Angeles")).isoformat(timespec="seconds")
 
     if st.button("Submit", type="primary", use_container_width=True):
         if text.strip():
@@ -320,7 +325,7 @@ elif nav == "Log Entry":
                 for entry in entries:
                     payload = entry.get("data", {})
                     payload.setdefault("original_text", text)
-                    payload.setdefault("date", submitted_at)
+                    payload["date"] = submitted_at
                     if entry.get("type") == "workout":
                         payload.setdefault("estimated_calories_burned", round(_estimate_workout_calories(payload), 0))
                     elif entry.get("type") == "hike":
