@@ -44,9 +44,7 @@ nav = st.sidebar.radio(
     [
         "Dashboard",
         "Log Entry",
-        "Workout History",
-        "Hike History",
-        "Food History",
+        "Log History",
         "Progress & Stats",
         "Trophies / Awards",
     ],
@@ -209,6 +207,69 @@ def render_daily_log_timeline(day: date):
         st.markdown(f"- {label}")
 
 
+def build_unified_log_history() -> pd.DataFrame:
+    workouts = safe_dt(fetch_workouts(), "date")
+    hikes = safe_dt(fetch_hikes(), "date")
+    foods = safe_dt(fetch_foods(), "date")
+
+    frames = []
+
+    if not workouts.empty:
+        wf = workouts.copy()
+        wf["log_type"] = "Workout"
+        wf["title"] = wf["workout_name"].fillna("Workout")
+        wf["subtitle"] = wf["muscle_group"].fillna("")
+        wf["search_blob"] = (
+            wf["workout_name"].fillna("")
+            + " "
+            + wf["muscle_group"].fillna("")
+            + " "
+            + wf["notes"].fillna("")
+            + " "
+            + wf["original_text"].fillna("")
+        ).str.lower()
+        wf["table_name"] = "workouts"
+        frames.append(wf)
+
+    if not hikes.empty:
+        hf = hikes.copy()
+        hf["log_type"] = "Hike"
+        hf["title"] = hf["trail_name"].fillna("Hike")
+        hf["subtitle"] = hf["distance_miles"].fillna(0).map(lambda m: f"{m} mi")
+        hf["search_blob"] = (
+            hf["trail_name"].fillna("")
+            + " "
+            + hf["difficulty"].fillna("")
+            + " "
+            + hf["notes"].fillna("")
+            + " "
+            + hf["original_text"].fillna("")
+        ).str.lower()
+        hf["table_name"] = "hikes"
+        frames.append(hf)
+
+    if not foods.empty:
+        ff = foods.copy()
+        ff["log_type"] = "Food"
+        ff["title"] = ff["meal_type"].fillna("Meal")
+        ff["subtitle"] = ff["total_calories"].fillna(0).map(lambda c: f"{int(_to_float(c))} cal")
+        ff["search_blob"] = (
+            ff["meal_type"].fillna("")
+            + " "
+            + ff["notes"].fillna("")
+            + " "
+            + ff["original_text"].fillna("")
+        ).str.lower()
+        ff["table_name"] = "foods"
+        frames.append(ff)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    return combined.sort_values("date", ascending=False)
+
+
 if nav == "Dashboard":
     workouts = safe_dt(fetch_workouts(), "date")
     hikes = safe_dt(fetch_hikes(), "date")
@@ -356,82 +417,58 @@ elif nav == "Log Entry":
     selected_day = st.date_input("Select a date to view what happened", value=date.today(), key="log_calendar")
     render_daily_log_timeline(selected_day)
 
-elif nav == "Workout History":
-    st.subheader("🏋️ Workout History")
-    df = safe_dt(fetch_workouts(), "date")
-    c1, c2 = st.columns(2)
-    q = c1.text_input("Search workout name/notes")
-    selected_day = c2.date_input("Calendar Date", value=date.today(), key="workout_calendar")
-    if q:
-        df = df[df["workout_name"].fillna("").str.contains(q, case=False) | df["notes"].fillna("").str.contains(q, case=False)]
-    st.markdown("#### Selected Day")
-    day_df = df[df["date"].dt.date == selected_day]
-    if day_df.empty:
-        st.info("No workouts for the selected day.")
-    else:
-        for _, row in day_df.iterrows():
-            st.markdown(f"- {row['date'].date()} · **{row['workout_name']}** ({row['muscle_group']})")
-    st.markdown("#### Log History")
-    st.write(f"Total sessions: **{len(df)}**")
-    for _, row in df.iterrows():
-        with st.expander(f"{row['date'].date()} · {row['workout_name']} ({row['muscle_group']})"):
-            st.write(f"Duration: {row.get('duration_minutes') or 0} min | Cardio: {row.get('cardio_minutes') or 0} min")
-            st.write(f"Estimated calories burned: {int(_to_float(row.get('estimated_calories_burned')))} calories")
-            ex = fetch_exercises(int(row["id"]))
-            st.dataframe(ex[["exercise_name", "sets", "reps", "weight"]], use_container_width=True)
-            if st.button("Delete Workout", key=f"del_w_{row['id']}"):
-                delete_entry("workouts", int(row["id"]))
-                st.rerun()
+elif nav == "Log History":
+    st.subheader("📚 Log History")
+    logs = build_unified_log_history()
 
-elif nav == "Hike History":
-    st.subheader("🥾 Hike History")
-    df = safe_dt(fetch_hikes(), "date")
     c1, c2 = st.columns(2)
-    q = c1.text_input("Search trail/notes")
-    selected_day = c2.date_input("Calendar Date", value=date.today(), key="hike_calendar")
-    if q:
-        df = df[df["trail_name"].fillna("").str.contains(q, case=False) | df["notes"].fillna("").str.contains(q, case=False)]
-    st.markdown("#### Selected Day")
-    day_df = df[df["date"].dt.date == selected_day]
-    if day_df.empty:
-        st.info("No hikes for the selected day.")
-    else:
-        for _, row in day_df.iterrows():
-            st.markdown(f"- {row['date'].date()} · **{row['trail_name']}** ({row['distance_miles']} mi)")
-    st.markdown("#### Log History")
-    st.write(f"Total hikes: **{len(df)}** · Total miles: **{round(df['distance_miles'].fillna(0).sum(),1) if not df.empty else 0}**")
-    for _, row in df.iterrows():
-        with st.expander(f"{row['date'].date()} · {row['trail_name']} ({row['distance_miles']} mi)"):
-            st.write(f"Duration: {row.get('duration_minutes') or 0} min | Elevation: {row.get('elevation_gain_ft') or 0} ft")
-            st.write(f"Estimated calories burned: {int(_to_float(row.get('estimated_calories_burned')))} calories")
-            if st.button("Delete Hike", key=f"del_h_{row['id']}"):
-                delete_entry("hikes", int(row["id"]))
-                st.rerun()
+    q = c1.text_input("Search all logs")
+    selected_day = c2.date_input("Calendar Date", value=date.today(), key="log_history_calendar")
 
-elif nav == "Food History":
-    st.subheader("🍱 Food History")
-    df = safe_dt(fetch_foods(), "date")
-    c1, c2 = st.columns(2)
-    q = c1.text_input("Search meal/notes")
-    selected_day = c2.date_input("Calendar Date", value=date.today(), key="food_calendar")
-    if q:
-        df = df[df["meal_type"].fillna("").str.contains(q, case=False) | df["notes"].fillna("").str.contains(q, case=False)]
+    if not logs.empty and q:
+        logs = logs[logs["search_blob"].str.contains(q.lower(), na=False)]
+
     st.markdown("#### Selected Day")
-    day_df = df[df["date"].dt.date == selected_day]
-    if day_df.empty:
-        st.info("No food logs for the selected day.")
+    day_logs = logs[logs["date"].dt.date == selected_day] if not logs.empty else pd.DataFrame()
+    if day_logs.empty:
+        st.info("No logs for the selected day.")
     else:
-        for _, row in day_df.iterrows():
-            st.markdown(f"- {row['date'].date()} · **{row['meal_type']}** ({int(_to_float(row.get('total_calories')))} calories)")
-    st.markdown("#### Log History")
-    st.write(f"Meals: **{len(df)}** · Avg protein: **{round(df['total_protein'].fillna(0).mean(),1) if not df.empty else 0} g**")
-    for _, row in df.iterrows():
-        with st.expander(f"{row['date'].date()} · {row['meal_type']} ({int(_to_float(row.get('total_calories')))} calories)"):
-            items = fetch_food_items(int(row["id"]))
-            st.dataframe(items[["item_name", "estimated_calories", "protein_g", "carbs_g", "fat_g"]], use_container_width=True)
-            if st.button("Delete Meal", key=f"del_f_{row['id']}"):
-                delete_entry("foods", int(row["id"]))
-                st.rerun()
+        for _, row in day_logs.sort_values("date").iterrows():
+            subtitle = f"({row['subtitle']})" if row["subtitle"] else ""
+            st.markdown(f"- {row['date'].strftime('%Y-%m-%d %I:%M %p')} · **{row['title']}** {subtitle}")
+
+    st.markdown("#### All Logs")
+    st.write(f"Total logs: **{len(logs)}**")
+    for _, row in logs.iterrows():
+        subtitle = f" ({row['subtitle']})" if row.get("subtitle") else ""
+        with st.expander(f"{row['date'].strftime('%Y-%m-%d %I:%M %p')} · {row['title']}{subtitle}"):
+            if row["table_name"] == "workouts":
+                st.write(f"Duration: {row.get('duration_minutes') or 0} min | Cardio: {row.get('cardio_minutes') or 0} min")
+                st.write(f"Estimated calories burned: {int(_to_float(row.get('estimated_calories_burned')))} calories")
+                ex = fetch_exercises(int(row["id"]))
+                if not ex.empty:
+                    st.dataframe(ex[["exercise_name", "sets", "reps", "weight"]], use_container_width=True)
+                if st.button("Delete Log", key=f"del_log_workout_{row['id']}"):
+                    delete_entry("workouts", int(row["id"]))
+                    st.rerun()
+            elif row["table_name"] == "hikes":
+                st.write(f"Duration: {row.get('duration_minutes') or 0} min | Elevation: {row.get('elevation_gain_ft') or 0} ft")
+                st.write(f"Estimated calories burned: {int(_to_float(row.get('estimated_calories_burned')))} calories")
+                if st.button("Delete Log", key=f"del_log_hike_{row['id']}"):
+                    delete_entry("hikes", int(row["id"]))
+                    st.rerun()
+            else:
+                st.write(
+                    "Calories: "
+                    f"{int(_to_float(row.get('total_calories')))} | Protein: {round(_to_float(row.get('total_protein')), 1)} g | "
+                    f"Carbs: {round(_to_float(row.get('total_carbs')), 1)} g | Fat: {round(_to_float(row.get('total_fat')), 1)} g"
+                )
+                items = fetch_food_items(int(row["id"]))
+                if not items.empty:
+                    st.dataframe(items[["item_name", "estimated_calories", "protein_g", "carbs_g", "fat_g"]], use_container_width=True)
+                if st.button("Delete Log", key=f"del_log_food_{row['id']}"):
+                    delete_entry("foods", int(row["id"]))
+                    st.rerun()
 
 elif nav == "Progress & Stats":
     st.subheader("📈 Progress & Stats")
