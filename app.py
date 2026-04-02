@@ -57,8 +57,13 @@ if nav == "Log Entry":
     st.sidebar.subheader("Last Submit")
     p = st.session_state.get("last_submit")
     if p:
+        confidence_value = p.get("confidence", 0)
+        try:
+            confidence_pct = round(float(confidence_value) * 100)
+        except (TypeError, ValueError):
+            confidence_pct = 0
         st.sidebar.write(f"Type: **{p.get('type', 'unknown')}**")
-        st.sidebar.write(f"Confidence: **{round(float(p.get('confidence', 0))*100)}%**")
+        st.sidebar.write(f"Confidence: **{confidence_pct}%**")
 
 
 def render_validation_queue():
@@ -253,20 +258,26 @@ elif nav == "Log Entry":
     if st.button("Submit", type="primary", use_container_width=True):
         if text.strip():
             st.session_state.log_text = text
-            parsed = parse_entry(text)
-            entries = parsed.get("entries", [])
-            if not entries:
-                entries = [{"type": parsed.get("type", "note"), "confidence": parsed.get("confidence", 0), "data": parsed.get("data", {})}]
-            st.session_state.last_submit = entries[0]
-            for entry in entries:
-                payload = entry.get("data", {})
-                payload.setdefault("original_text", text)
-                insert_history_entry(
-                    raw_text=text,
-                    parsed_type=entry.get("type", "note"),
-                    confidence=float(entry.get("confidence", 0) or 0),
-                    payload_json=json.dumps(payload),
-                )
+            with st.spinner("Analyzing..."):
+                parsed = parse_entry(text)
+                entries = parsed.get("entries", [])
+                if not entries:
+                    entries = [{"type": parsed.get("type", "note"), "confidence": parsed.get("confidence", 0), "data": parsed.get("data", {})}]
+                st.session_state.last_submit = entries[0]
+                for entry in entries:
+                    payload = entry.get("data", {})
+                    payload.setdefault("original_text", text)
+                    entry_confidence = entry.get("confidence", 0)
+                    try:
+                        confidence_score = float(entry_confidence or 0)
+                    except (TypeError, ValueError):
+                        confidence_score = 0.0
+                    insert_history_entry(
+                        raw_text=text,
+                        parsed_type=entry.get("type", "note"),
+                        confidence=confidence_score,
+                        payload_json=json.dumps(payload),
+                    )
             st.session_state.log_text = ""
             st.success(f"Submitted {len(entries)} parsed entr{'y' if len(entries) == 1 else 'ies'} for validation.")
             st.rerun()
