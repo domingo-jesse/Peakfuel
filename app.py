@@ -26,7 +26,7 @@ from db import (
     update_history_entry,
     update_profile,
 )
-from utils import apply_theme, metric_card, plot_bar, plot_line, plot_pie, safe_dt, week_bounds
+from utils import apply_theme, metric_card, plot_bar, plot_line, plot_pie, safe_dt, week_bounds, weekly_counts
 
 
 load_dotenv()
@@ -187,16 +187,8 @@ if nav == "Dashboard":
 
     st.subheader("Activity Trends")
     a1, a2 = st.columns(2)
-    if not workouts.empty:
-        wk = workouts.groupby(workouts["date"].dt.to_period("W")).size().reset_index(name="count")
-        wk["week"] = wk["date"].astype(str)
-    else:
-        wk = pd.DataFrame()
-    if not hikes.empty:
-        hk = hikes.groupby(hikes["date"].dt.to_period("W")).size().reset_index(name="count")
-        hk["week"] = hk["date"].astype(str)
-    else:
-        hk = pd.DataFrame()
+    wk = weekly_counts(workouts)
+    hk = weekly_counts(hikes)
     with a1:
         plot_bar(wk, "week", "count", "Workouts by Week")
     with a2:
@@ -406,18 +398,13 @@ elif nav == "Progress & Stats":
     st.markdown("---")
     cals = foods.groupby(foods["date"].dt.date)["total_calories"].sum().reset_index() if not foods.empty else pd.DataFrame()
     protein = foods.groupby(foods["date"].dt.date)["total_protein"].sum().reset_index() if not foods.empty else pd.DataFrame()
-    hikes_week = hikes.groupby(hikes["date"].dt.to_period("W")).size().reset_index(name="count") if not hikes.empty else pd.DataFrame()
-    workouts_week = workouts.groupby(workouts["date"].dt.to_period("W")).size().reset_index(name="count") if not workouts.empty else pd.DataFrame()
+    hikes_week = weekly_counts(hikes)
+    workouts_week = weekly_counts(workouts)
 
     if not cals.empty:
         cals.columns = ["date", "calories"]
     if not protein.empty:
         protein.columns = ["date", "protein"]
-    if not hikes_week.empty:
-        hikes_week["week"] = hikes_week["date"].astype(str)
-    if not workouts_week.empty:
-        workouts_week["week"] = workouts_week["date"].astype(str)
-
     c1, c2 = st.columns(2)
     with c1:
         plot_line(cals, "date", "calories", "Calories over Time")
