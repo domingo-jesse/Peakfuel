@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from datetime import date
+from datetime import date, datetime
 import json
 
 import pandas as pd
@@ -52,23 +52,38 @@ nav = st.sidebar.radio(
 )
 
 
-if nav == "Log Entry":
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Last Submit")
-    p = st.session_state.get("last_submit")
-    if p:
-        confidence_value = p.get("confidence", 0)
-        try:
-            confidence_pct = round(float(confidence_value) * 100)
-        except (TypeError, ValueError):
-            confidence_pct = 0
-        st.sidebar.write(f"Type: **{p.get('type', 'unknown')}**")
-        st.sidebar.write(f"Confidence: **{confidence_pct}%**")
+def _to_float(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _estimate_workout_calories(payload: dict) -> float:
+    duration = _to_float(payload.get("duration_minutes"))
+    cardio = _to_float(payload.get("cardio_minutes"))
+    return max((duration * 6.0) + (cardio * 2.5), 0.0)
+
+
+def _estimate_hike_calories(payload: dict) -> float:
+    miles = _to_float(payload.get("distance_miles"))
+    duration = _to_float(payload.get("duration_minutes"))
+    return max((miles * 110.0) + (duration * 1.5), 0.0)
+
+
+def _estimate_food_calories(payload: dict) -> float:
+    total = _to_float(payload.get("total_calories"))
+    if total > 0:
+        return total
+    foods = payload.get("foods", [])
+    if isinstance(foods, list):
+        return sum(_to_float(item.get("estimated_calories")) for item in foods if isinstance(item, dict))
+    return 0.0
 
 
 def render_validation_queue():
     st.markdown("---")
-    st.subheader("✅ Validation Queue")
+    st.subheader("✅ Needs Approval")
     pending = fetch_history_entries("pending")
     if pending.empty:
         st.info("No pending entries. Submit a log entry above to validate it.")
@@ -76,60 +91,88 @@ def render_validation_queue():
         for _, row in pending.iterrows():
             entry_id = int(row["id"])
             parsed_type = (row.get("parsed_type") or "note").strip().lower()
-            confidence = round(float(row.get("confidence") or 0) * 100)
-            with st.expander(f"#{entry_id} · {parsed_type.title()} · {confidence}% confidence"):
+            with st.expander(f"{parsed_type.title()} entry"):
                 st.caption(f"Original entry: {row.get('raw_text') or ''}")
                 options = ["workout", "hike", "food", "note"]
                 default_idx = options.index(parsed_type) if parsed_type in options else len(options) - 1
                 editor_type = st.selectbox("Entry Type", options=options, index=default_idx, key=f"hist_type_{entry_id}")
-                pretty_payload = "{}"
+                payload = {}
                 try:
-                    parsed_payload = json.loads(row.get("payload_json") or "{}")
-                    pretty_payload = json.dumps(parsed_payload, indent=2)
+                    payload = json.loads(row.get("payload_json") or "{}")
                 except Exception:
-                    pass
-                edited_payload = st.text_area("Payload JSON", value=pretty_payload, height=220, key=f"hist_payload_{entry_id}")
-                c1, c2, c3, c4 = st.columns(4)
+                    payload = {}
+
+                existing_date = pd.to_datetime(payload.get("date"), errors="coerce")
+                if pd.isna(existing_date):
+                    existing_date = datetime.now()
+                date_col, time_col = st.columns(2)
+                with date_col:
+                    payload_date = st.date_input("Date", value=existing_date.date(), key=f"hist_date_{entry_id}")
+                with time_col:
+                    payload_time = st.time_input("Time", value=existing_date.time(), key=f"hist_time_{entry_id}")
+                payload["date"] = datetime.combine(payload_date, payload_time).isoformat(timespec="seconds")
+
+                if editor_type == "workout":
+                    payload["duration_minutes"] = st.number_input(
+                        "Duration (minutes)",
+                        min_value=0,
+                        value=int(_to_float(payload.get("duration_minutes"))),
+                        key=f"hist_workout_duration_{entry_id}",
+                    )
+                    payload["cardio_minutes"] = st.number_input(
+                        "Cardio (minutes)",
+                        min_value=0,
+                        value=int(_to_float(payload.get("cardio_minutes"))),
+                        key=f"hist_workout_cardio_{entry_id}",
+                    )
+                    payload["estimated_calories_burned"] = round(_estimate_workout_calories(payload), 0)
+                    st.caption(f"Estimated calories burned: **{int(payload['estimated_calories_burned'])} calories**")
+                elif editor_type == "hike":
+                    payload["distance_miles"] = st.number_input(
+                        "Mileage (miles)",
+                        min_value=0.0,
+                        value=_to_float(payload.get("distance_miles")),
+                        step=0.1,
+                        key=f"hist_hike_distance_{entry_id}",
+                    )
+                    payload["duration_minutes"] = st.number_input(
+                        "Duration (minutes)",
+                        min_value=0,
+                        value=int(_to_float(payload.get("duration_minutes"))),
+                        key=f"hist_hike_duration_{entry_id}",
+                    )
+                    payload["elevation_gain_ft"] = st.number_input(
+                        "Elevation gain (ft, optional)",
+                        min_value=0,
+                        value=int(_to_float(payload.get("elevation_gain_ft"))),
+                        key=f"hist_hike_elev_{entry_id}",
+                    )
+                    payload["estimated_calories_burned"] = round(_estimate_hike_calories(payload), 0)
+                    st.caption(f"Estimated calories burned: **{int(payload['estimated_calories_burned'])} calories**")
+                elif editor_type == "food":
+                    payload["total_calories"] = round(_estimate_food_calories(payload), 0)
+                    st.caption(f"Estimated calories eaten: **{int(payload['total_calories'])} calories**")
+
+                c1, c2, c3 = st.columns(3)
                 with c1:
-                    if st.button("Save Edit", key=f"save_hist_{entry_id}", use_container_width=True):
-                        try:
-                            obj = json.loads(edited_payload)
-                            update_history_entry(entry_id, editor_type, json.dumps(obj))
-                            st.success("Edits saved.")
-                            st.rerun()
-                        except Exception:
-                            st.error("Payload JSON is invalid. Please fix formatting.")
-                with c2:
                     if st.button("Approve", key=f"approve_hist_{entry_id}", use_container_width=True):
-                        try:
-                            obj = json.loads(edited_payload)
-                            ok = approve_history_entry(entry_id, editor_type, obj)
-                            if ok:
-                                st.success("Entry approved and moved to its history log.")
-                                st.rerun()
-                            st.warning("Only workout, hike, and food can be approved.")
-                        except Exception:
-                            st.error("Payload JSON is invalid. Please fix formatting.")
-                with c3:
+                        update_history_entry(entry_id, editor_type, json.dumps(payload))
+                        ok = approve_history_entry(entry_id, editor_type, payload)
+                        if ok:
+                            st.success("Entry approved and moved to its history log.")
+                            st.rerun()
+                        st.warning("Only workout, hike, and food can be approved.")
+                with c2:
                     if st.button("Disapprove", key=f"reject_hist_{entry_id}", use_container_width=True):
+                        update_history_entry(entry_id, editor_type, json.dumps(payload))
                         set_history_status(entry_id, "disapproved")
                         st.info("Entry marked as disapproved.")
                         st.rerun()
-                with c4:
+                with c3:
                     if st.button("Delete", key=f"delete_hist_{entry_id}", use_container_width=True):
                         delete_history_entry(entry_id)
                         st.info("Entry deleted.")
                         st.rerun()
-
-    st.subheader("🧾 Validation History")
-    history = fetch_history_entries()
-    if history.empty:
-        st.caption("No validation history yet.")
-    else:
-        st.dataframe(
-            history[["id", "created_at", "parsed_type", "status", "target_table", "target_id"]],
-            use_container_width=True,
-        )
 
 
 def render_daily_log_timeline(day: date):
@@ -254,6 +297,13 @@ elif nav == "Log Entry":
         height=220,
         placeholder="Example: Hiked 4 miles at Mission Peak, then ate a turkey sandwich and did 30 min leg workout.",
     )
+    submit_now = datetime.now()
+    dcol, tcol = st.columns(2)
+    with dcol:
+        submit_date = st.date_input("Log date", value=submit_now.date(), key="submit_log_date")
+    with tcol:
+        submit_time = st.time_input("Log time", value=submit_now.time().replace(microsecond=0), key="submit_log_time")
+    submitted_at = datetime.combine(submit_date, submit_time).isoformat(timespec="seconds")
 
     if st.button("Submit", type="primary", use_container_width=True):
         if text.strip():
@@ -263,10 +313,16 @@ elif nav == "Log Entry":
                 entries = parsed.get("entries", [])
                 if not entries:
                     entries = [{"type": parsed.get("type", "note"), "confidence": parsed.get("confidence", 0), "data": parsed.get("data", {})}]
-                st.session_state.last_submit = entries[0]
                 for entry in entries:
                     payload = entry.get("data", {})
                     payload.setdefault("original_text", text)
+                    payload.setdefault("date", submitted_at)
+                    if entry.get("type") == "workout":
+                        payload.setdefault("estimated_calories_burned", round(_estimate_workout_calories(payload), 0))
+                    elif entry.get("type") == "hike":
+                        payload.setdefault("estimated_calories_burned", round(_estimate_hike_calories(payload), 0))
+                    elif entry.get("type") == "food":
+                        payload.setdefault("total_calories", round(_estimate_food_calories(payload), 0))
                     entry_confidence = entry.get("confidence", 0)
                     try:
                         confidence_score = float(entry_confidence or 0)
@@ -311,6 +367,7 @@ elif nav == "Workout History":
     for _, row in df.iterrows():
         with st.expander(f"{row['date'].date()} · {row['workout_name']} ({row['muscle_group']})"):
             st.write(f"Duration: {row.get('duration_minutes') or 0} min | Cardio: {row.get('cardio_minutes') or 0} min")
+            st.write(f"Estimated calories burned: {int(_to_float(row.get('estimated_calories_burned')))} calories")
             ex = fetch_exercises(int(row["id"]))
             st.dataframe(ex[["exercise_name", "sets", "reps", "weight"]], use_container_width=True)
             if st.button("Delete Workout", key=f"del_w_{row['id']}"):
@@ -337,6 +394,7 @@ elif nav == "Hike History":
     for _, row in df.iterrows():
         with st.expander(f"{row['date'].date()} · {row['trail_name']} ({row['distance_miles']} mi)"):
             st.write(f"Duration: {row.get('duration_minutes') or 0} min | Elevation: {row.get('elevation_gain_ft') or 0} ft")
+            st.write(f"Estimated calories burned: {int(_to_float(row.get('estimated_calories_burned')))} calories")
             if st.button("Delete Hike", key=f"del_h_{row['id']}"):
                 delete_entry("hikes", int(row["id"]))
                 st.rerun()
@@ -355,11 +413,11 @@ elif nav == "Food History":
         st.info("No food logs for the selected day.")
     else:
         for _, row in day_df.iterrows():
-            st.markdown(f"- {row['date'].date()} · **{row['meal_type']}** ({row.get('total_calories') or 0} kcal)")
+            st.markdown(f"- {row['date'].date()} · **{row['meal_type']}** ({int(_to_float(row.get('total_calories')))} calories)")
     st.markdown("#### Log History")
     st.write(f"Meals: **{len(df)}** · Avg protein: **{round(df['total_protein'].fillna(0).mean(),1) if not df.empty else 0} g**")
     for _, row in df.iterrows():
-        with st.expander(f"{row['date'].date()} · {row['meal_type']} ({row.get('total_calories') or 0} kcal)"):
+        with st.expander(f"{row['date'].date()} · {row['meal_type']} ({int(_to_float(row.get('total_calories')))} calories)"):
             items = fetch_food_items(int(row["id"]))
             st.dataframe(items[["item_name", "estimated_calories", "protein_g", "carbs_g", "fat_g"]], use_container_width=True)
             if st.button("Delete Meal", key=f"del_f_{row['id']}"):

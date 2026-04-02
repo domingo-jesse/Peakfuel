@@ -45,7 +45,7 @@ def metric_card(title: str, value, subtitle: str = ""):
 
 
 def safe_dt(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    if col in df.columns and not df.empty:
+    if col in df.columns:
         df = df.copy()
         df[col] = pd.to_datetime(df[col], errors="coerce")
     return df
