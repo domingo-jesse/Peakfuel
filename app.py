@@ -1,26 +1,29 @@
 from dotenv import load_dotenv
 from datetime import date
+import json
 
 import pandas as pd
 import streamlit as st
 
 from ai_parser import parse_entry
 from db import (
+    approve_history_entry,
     compute_streaks,
     delete_entry,
+    delete_history_entry,
     fetch_exercises,
     fetch_food_items,
     fetch_foods,
+    fetch_history_entries,
     fetch_hikes,
     fetch_profile,
     fetch_trophies,
     fetch_workouts,
     init_db,
-    insert_food,
-    insert_hike,
-    insert_workout,
+    insert_history_entry,
     refresh_trophies,
-    seed_demo_data,
+    set_history_status,
+    update_history_entry,
     update_profile,
 )
 from utils import apply_theme, metric_card, plot_bar, plot_line, plot_pie, safe_dt, week_bounds
@@ -29,10 +32,6 @@ from utils import apply_theme, metric_card, plot_bar, plot_line, plot_pie, safe_
 load_dotenv()
 st.set_page_config(page_title="PeakFuel", page_icon="🏔️", layout="wide")
 init_db()
-
-if "seeded" not in st.session_state:
-    seed_demo_data()
-    st.session_state.seeded = True
 
 apply_theme()
 
@@ -62,17 +61,70 @@ if nav == "Log Entry":
         st.sidebar.write(f"Confidence: **{round(float(p.get('confidence', 0))*100)}%**")
 
 
-def save_payload(entry_type: str, payload: dict):
-    if entry_type == "workout":
-        insert_workout(payload)
-    elif entry_type == "hike":
-        insert_hike(payload)
-    elif entry_type == "food":
-        insert_food(payload)
+def render_validation_queue():
+    st.markdown("---")
+    st.subheader("✅ Validation Queue")
+    pending = fetch_history_entries("pending")
+    if pending.empty:
+        st.info("No pending entries. Submit a log entry above to validate it.")
     else:
-        st.warning("Only workout/hike/food save is enabled in v1.")
-        return
-    st.success("Saved successfully!")
+        for _, row in pending.iterrows():
+            entry_id = int(row["id"])
+            parsed_type = (row.get("parsed_type") or "note").strip().lower()
+            confidence = round(float(row.get("confidence") or 0) * 100)
+            with st.expander(f"#{entry_id} · {parsed_type.title()} · {confidence}% confidence"):
+                st.caption(f"Original entry: {row.get('raw_text') or ''}")
+                options = ["workout", "hike", "food", "note"]
+                default_idx = options.index(parsed_type) if parsed_type in options else len(options) - 1
+                editor_type = st.selectbox("Entry Type", options=options, index=default_idx, key=f"hist_type_{entry_id}")
+                pretty_payload = "{}"
+                try:
+                    parsed_payload = json.loads(row.get("payload_json") or "{}")
+                    pretty_payload = json.dumps(parsed_payload, indent=2)
+                except Exception:
+                    pass
+                edited_payload = st.text_area("Payload JSON", value=pretty_payload, height=220, key=f"hist_payload_{entry_id}")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    if st.button("Save Edit", key=f"save_hist_{entry_id}", use_container_width=True):
+                        try:
+                            obj = json.loads(edited_payload)
+                            update_history_entry(entry_id, editor_type, json.dumps(obj))
+                            st.success("Edits saved.")
+                            st.rerun()
+                        except Exception:
+                            st.error("Payload JSON is invalid. Please fix formatting.")
+                with c2:
+                    if st.button("Approve", key=f"approve_hist_{entry_id}", use_container_width=True):
+                        try:
+                            obj = json.loads(edited_payload)
+                            ok = approve_history_entry(entry_id, editor_type, obj)
+                            if ok:
+                                st.success("Entry approved and moved to its history log.")
+                                st.rerun()
+                            st.warning("Only workout, hike, and food can be approved.")
+                        except Exception:
+                            st.error("Payload JSON is invalid. Please fix formatting.")
+                with c3:
+                    if st.button("Disapprove", key=f"reject_hist_{entry_id}", use_container_width=True):
+                        set_history_status(entry_id, "disapproved")
+                        st.info("Entry marked as disapproved.")
+                        st.rerun()
+                with c4:
+                    if st.button("Delete", key=f"delete_hist_{entry_id}", use_container_width=True):
+                        delete_history_entry(entry_id)
+                        st.info("Entry deleted.")
+                        st.rerun()
+
+    st.subheader("🧾 Validation History")
+    history = fetch_history_entries()
+    if history.empty:
+        st.caption("No validation history yet.")
+    else:
+        st.dataframe(
+            history[["id", "created_at", "parsed_type", "status", "target_table", "target_id"]],
+            use_container_width=True,
+        )
 
 
 def render_daily_log_timeline(day: date):
@@ -210,18 +262,26 @@ elif nav == "Log Entry":
         if text.strip():
             st.session_state.log_text = text
             parsed = parse_entry(text)
-            st.session_state.last_submit = parsed
-            etype = parsed.get("type", "note")
-            data = parsed.get("data", {})
-            if etype in {"workout", "hike", "food"}:
-                save_payload(etype, data)
-                st.session_state.log_text = ""
-                st.success(f"Submitted and saved as {etype}.")
-                st.rerun()
-            else:
-                st.warning("Entry was parsed as a note. Add clearer workout/hike/food details and submit again.")
+            entries = parsed.get("entries", [])
+            if not entries:
+                entries = [{"type": parsed.get("type", "note"), "confidence": parsed.get("confidence", 0), "data": parsed.get("data", {})}]
+            st.session_state.last_submit = entries[0]
+            for entry in entries:
+                payload = entry.get("data", {})
+                payload.setdefault("original_text", text)
+                insert_history_entry(
+                    raw_text=text,
+                    parsed_type=entry.get("type", "note"),
+                    confidence=float(entry.get("confidence", 0) or 0),
+                    payload_json=json.dumps(payload),
+                )
+            st.session_state.log_text = ""
+            st.success(f"Submitted {len(entries)} parsed entr{'y' if len(entries) == 1 else 'ies'} for validation.")
+            st.rerun()
         else:
             st.warning("Please type an entry first.")
+
+    render_validation_queue()
 
     st.markdown("---")
     st.subheader("📅 Daily Calendar + Log History")

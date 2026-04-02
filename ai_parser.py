@@ -34,8 +34,12 @@ def parse_entry(natural_text: str) -> dict[str, Any]:
     client = _openai_client()
     if client:
         prompt = (
-            "You are PeakFuel parser. Classify input as workout, hike, food, bodyweight, or note. "
-            "For workout/hike/food return structured JSON with keys: type, confidence, and data using fields exactly from requested schemas. "
+            "You are PeakFuel parser. Split the input into one or more log entries when needed. "
+            "Return JSON with key 'entries' where each entry has: type, confidence, and data. "
+            "Allowed types: workout, hike, food, note. "
+            "For workout use keys: date, workout_name, muscle_group, duration_minutes, cardio_minutes, notes, original_text, exercises[]. "
+            "For hike use keys: date, trail_name, distance_miles, duration_minutes, elevation_gain_ft, difficulty, notes, original_text. "
+            "For food use keys: date, meal_type, foods[], total_calories, total_protein, total_carbs, total_fat, notes, original_text. "
             "Include missing fields as null. Keep date as YYYY-MM-DD; default today if ambiguous."
         )
         try:
@@ -50,14 +54,29 @@ def parse_entry(natural_text: str) -> dict[str, Any]:
             )
             content = resp.choices[0].message.content or "{}"
             parsed = _safe_json(content)
-            parsed.setdefault("type", "note")
-            parsed.setdefault("confidence", 0.0)
-            parsed.setdefault("data", {})
-            parsed["data"]["original_text"] = natural_text
-            return parsed
+            entries = parsed.get("entries", [])
+            if not isinstance(entries, list):
+                entries = []
+            normalized = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                data = entry.get("data") or {}
+                if not isinstance(data, dict):
+                    data = {}
+                data.setdefault("original_text", natural_text)
+                normalized.append(
+                    {
+                        "type": entry.get("type", "note"),
+                        "confidence": entry.get("confidence", 0.0),
+                        "data": data,
+                    }
+                )
+            if normalized:
+                return {"entries": normalized}
         except Exception:
             pass
-    return heuristic_parse(natural_text)
+    return heuristic_parse_multi(natural_text)
 
 
 def transcribe_audio(uploaded_file) -> str:
@@ -136,6 +155,19 @@ def heuristic_parse(text: str) -> dict[str, Any]:
             "original_text": text,
         },
     }
+
+
+def heuristic_parse_multi(text: str) -> dict[str, Any]:
+    chunks = [c.strip() for c in re.split(r"[.\n]+| then ", text) if c.strip()]
+    entries: list[dict[str, Any]] = []
+    for chunk in chunks:
+        parsed = heuristic_parse(chunk)
+        if parsed.get("type") == "note":
+            continue
+        entries.append(parsed)
+    if not entries:
+        entries = [heuristic_parse(text)]
+    return {"entries": entries}
 
 
 def _first_int(text: str, pattern: str):
