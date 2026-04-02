@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS workouts (
     muscle_group TEXT,
     duration_minutes INTEGER,
     cardio_minutes INTEGER,
+    estimated_calories_burned REAL,
     notes TEXT,
     original_text TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS hikes (
     distance_miles REAL,
     duration_minutes INTEGER,
     elevation_gain_ft INTEGER,
+    estimated_calories_burned REAL,
     difficulty TEXT,
     notes TEXT,
     original_text TEXT,
@@ -131,6 +133,8 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with closing(get_conn()) as conn:
         conn.executescript(SCHEMA_SQL)
+        _ensure_column(conn, "workouts", "estimated_calories_burned", "REAL")
+        _ensure_column(conn, "hikes", "estimated_calories_burned", "REAL")
         for trophy in TROPHY_DEFINITIONS:
             conn.execute(
                 """
@@ -141,6 +145,12 @@ def init_db() -> None:
             )
         conn.execute("INSERT OR IGNORE INTO profile(id) VALUES (1)")
         conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 def _target_for_code(code: str) -> float:
@@ -161,8 +171,8 @@ def insert_workout(payload: dict[str, Any]) -> int:
     with closing(get_conn()) as conn:
         cur = conn.execute(
             """
-            INSERT INTO workouts(date, workout_name, muscle_group, duration_minutes, cardio_minutes, notes, original_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO workouts(date, workout_name, muscle_group, duration_minutes, cardio_minutes, estimated_calories_burned, notes, original_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.get("date", str(date.today())),
@@ -170,6 +180,7 @@ def insert_workout(payload: dict[str, Any]) -> int:
                 payload.get("muscle_group"),
                 payload.get("duration_minutes"),
                 payload.get("cardio_minutes"),
+                payload.get("estimated_calories_burned"),
                 payload.get("notes"),
                 payload.get("original_text"),
             ),
@@ -192,8 +203,8 @@ def insert_hike(payload: dict[str, Any]) -> int:
     with closing(get_conn()) as conn:
         cur = conn.execute(
             """
-            INSERT INTO hikes(date, trail_name, distance_miles, duration_minutes, elevation_gain_ft, difficulty, notes, original_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hikes(date, trail_name, distance_miles, duration_minutes, elevation_gain_ft, estimated_calories_burned, difficulty, notes, original_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.get("date", str(date.today())),
@@ -201,6 +212,7 @@ def insert_hike(payload: dict[str, Any]) -> int:
                 payload.get("distance_miles"),
                 payload.get("duration_minutes"),
                 payload.get("elevation_gain_ft"),
+                payload.get("estimated_calories_burned"),
                 payload.get("difficulty"),
                 payload.get("notes"),
                 payload.get("original_text"),
