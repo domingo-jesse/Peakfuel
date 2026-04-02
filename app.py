@@ -347,6 +347,8 @@ if nav == "Dashboard":
                 foods[["date"]] if not foods.empty else pd.DataFrame(columns=["date"]),
             ]
         ).dropna()
+        all_dates["date"] = pd.to_datetime(all_dates["date"], errors="coerce")
+        all_dates = all_dates.dropna(subset=["date"])
         all_dates["day"] = all_dates["date"].dt.date
         logged = sorted(all_dates["day"].unique())
         run, rows = 0, []
